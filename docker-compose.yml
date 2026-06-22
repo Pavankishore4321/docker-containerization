@@ -1,0 +1,118 @@
+# ─────────────────────────────────────────────────────────────────────────────
+# Docker Compose: Full Stack — Angular + Spring Boot + MongoDB + Nginx
+# Project: AspTax (Incresol Software Services)
+#
+# Services:
+#   nginx      → Reverse proxy, serves Angular on port 80
+#   angular    → Angular frontend (built with multi-stage Dockerfile)
+#   springboot → Spring Boot API on port 8080
+#   mongodb    → MongoDB database
+#
+# Usage:
+#   docker-compose up -d               # Start all services
+#   docker-compose logs -f springboot  # Watch Spring Boot logs
+#   docker-compose down                # Stop all services
+#   docker-compose down -v             # Stop and delete volumes
+# ─────────────────────────────────────────────────────────────────────────────
+
+version: '3.8'
+
+networks:
+  app-network:
+    driver: bridge
+
+volumes:
+  mongo-data:   {}
+  app-logs:     {}
+
+services:
+
+  # ── NGINX REVERSE PROXY ───────────────────────────────────────────────────
+  # Handles all incoming traffic — routes /api to Spring Boot, / to Angular
+  nginx:
+    image: nginx:1.25-alpine
+    container_name: asptax-nginx
+    restart: unless-stopped
+    ports:
+      - "80:80"
+    volumes:
+      - ./nginx-proxy.conf:/etc/nginx/conf.d/default.conf:ro
+    depends_on:
+      - angular
+      - springboot
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── ANGULAR FRONTEND ──────────────────────────────────────────────────────
+  angular:
+    build:
+      context: ./angular-nginx
+      dockerfile: Dockerfile
+    image: asptax-web:latest
+    container_name: asptax-angular
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "wget", "--quiet", "--tries=1", "--spider", "http://localhost/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── SPRING BOOT API ───────────────────────────────────────────────────────
+  springboot:
+    build:
+      context: ./springboot
+      dockerfile: Dockerfile
+    image: asptax-api:latest
+    container_name: asptax-api
+    restart: unless-stopped
+    environment:
+      # Database connection
+      SPRING_DATASOURCE_URL:      jdbc:mysql://mongodb:27017/asptax
+      SPRING_DATASOURCE_USERNAME: root
+      SPRING_DATASOURCE_PASSWORD: changeme      # Use .env file in production
+      # Spring profile
+      SPRING_PROFILES_ACTIVE:     prod
+      # Server port
+      SERVER_PORT:                8080
+    volumes:
+      - app-logs:/app/logs
+    depends_on:
+      mongodb:
+        condition: service_healthy
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/actuator/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 40s
+
+  # ── MONGODB ───────────────────────────────────────────────────────────────
+  mongodb:
+    image: mongo:6.0
+    container_name: asptax-mongodb
+    restart: unless-stopped
+    ports:
+      - "27017:27017"
+    environment:
+      MONGO_INITDB_ROOT_USERNAME: mongoadmin
+      MONGO_INITDB_ROOT_PASSWORD: changeme      # Change before use
+      MONGO_INITDB_DATABASE:      asptax
+    volumes:
+      - mongo-data:/data/db
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "mongosh", "--eval", "db.adminCommand('ping').ok"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
